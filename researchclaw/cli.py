@@ -304,6 +304,77 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if failed == 0 else 1
 
 
+def cmd_ideate(args: argparse.Namespace) -> int:
+    resolved = _resolve_config_or_exit(args)
+    if resolved is None:
+        return 1
+    config_path = resolved
+    papers = Path(cast(str, args.papers))
+    output = cast(str | None, args.output)
+    topic = cast(str | None, args.topic)
+    skip_preflight = cast(bool, args.skip_preflight)
+    require_approval = cast(bool, args.require_approval)
+
+    if not papers.exists():
+        print(f"Error: papers file not found: {papers}", file=sys.stderr)
+        return 1
+
+    config = RCConfig.load(config_path, check_paths=False)
+    if topic:
+        import dataclasses
+
+        config = dataclasses.replace(
+            config,
+            research=dataclasses.replace(config.research, topic=topic),
+        )
+
+    if not skip_preflight:
+        from researchclaw.llm import create_llm_client
+
+        client = create_llm_client(config)
+        print("Preflight check...", end=" ", flush=True)
+        ok, msg = client.preflight()
+        if ok:
+            print(msg)
+        else:
+            print(f"FAILED — {msg}", file=sys.stderr)
+            return 1
+
+    run_id = _generate_run_id(config.research.topic)
+    run_dir = Path(output or f"artifacts/{run_id}-idea")
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    adapters = AdapterBundle()
+
+    from researchclaw.pipeline.idea_generation import run_idea_generation_from_papers
+
+    print(f"ResearchClaw v{__import__('researchclaw').__version__} — Starting idea-generation subpipeline")
+    print(f"  Run ID:  {run_id}")
+    print(f"  Topic:   {config.research.topic}")
+    print(f"  Papers:  {papers}")
+    print(f"  Output:  {run_dir}")
+    print("  Stages:  5 -> 9")
+    print()
+
+    results = run_idea_generation_from_papers(
+        run_dir=run_dir,
+        run_id=run_id,
+        config=config,
+        adapters=adapters,
+        papers=papers,
+        topic_override=topic,
+        auto_approve_gates=not require_approval,
+    )
+    done = sum(1 for r in results if r.status.value == "done")
+    failed = sum(1 for r in results if r.status.value == "failed")
+    blocked = sum(1 for r in results if r.status.value == "blocked_approval")
+    print(
+        f"\nIdea-generation subpipeline complete: {done}/{len(results)} stages done, "
+        f"{failed} failed, {blocked} blocked"
+    )
+    return 0 if failed == 0 and blocked == 0 else 1
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     from researchclaw.config import validate_config
     import yaml
@@ -827,6 +898,28 @@ def main(argv: list[str] | None = None) -> int:
         "--no-graceful-degradation", action="store_true",
         help="Disable graceful degradation: fail pipeline on quality gate failure"
     )
+    ideate_p = sub.add_parser(
+        "ideate",
+        help="Run only Stage 5 -> Stage 9 from user-provided papers",
+    )
+    _ = ideate_p.add_argument(
+        "--papers", required=True, help="Paper input file (.json, .jsonl, .yaml, .yml)"
+    )
+    _ = ideate_p.add_argument(
+        "--topic", "-t", help="Override research topic for Stage 5 -> 9"
+    )
+    _ = ideate_p.add_argument(
+        "--config", "-c", default=None,
+        help="Config file (default: auto-detect config.arc.yaml or config.yaml)",
+    )
+    _ = ideate_p.add_argument("--output", "-o", help="Output directory")
+    _ = ideate_p.add_argument(
+        "--skip-preflight", action="store_true", help="Skip LLM preflight check"
+    )
+    _ = ideate_p.add_argument(
+        "--require-approval", action="store_true",
+        help="Do not auto-approve gate stages 5 and 9",
+    )
     val_p = sub.add_parser("validate", help="Validate config file")
     _ = val_p.add_argument(
         "--config", "-c", default=None,
@@ -923,6 +1016,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "run":
         return cmd_run(args)
+    elif command == "ideate":
+        return cmd_ideate(args)
     elif command == "validate":
         return cmd_validate(args)
     elif command == "doctor":
