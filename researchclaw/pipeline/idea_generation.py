@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time as _time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,7 @@ def run_idea_generation_from_papers(
     papers: str | Path | Mapping[str, Any] | Sequence[Mapping[str, Any]],
     topic_override: str | None = None,
     auto_approve_gates: bool = True,
+    verbose: bool = True,
 ) -> list[StageResult]:
     """Run the Stage 5→9 idea-generation chain from user-provided papers."""
 
@@ -183,7 +185,12 @@ def run_idea_generation_from_papers(
         )
 
     results: list[StageResult] = []
-    for stage in _IDEA_STAGES:
+    total_stages = len(_IDEA_STAGES)
+    for idx, stage in enumerate(_IDEA_STAGES, start=1):
+        prefix = f"[{run_id}] Stage {int(stage):02d}/{total_stages}"
+        if verbose:
+            print(f"{prefix} {stage.name} — running...", flush=True)
+        t0 = _time.monotonic()
         result = execute_stage(
             stage,
             run_dir=run_dir,
@@ -192,7 +199,17 @@ def run_idea_generation_from_papers(
             adapters=adapters,
             auto_approve_gates=auto_approve_gates,
         )
+        elapsed = _time.monotonic() - t0
         results.append(result)
+        if verbose:
+            if result.status == StageStatus.DONE:
+                arts = ", ".join(result.artifacts) if result.artifacts else "none"
+                print(f"{prefix} {stage.name} — done ({elapsed:.1f}s) → {arts}", flush=True)
+            elif result.status == StageStatus.FAILED:
+                err = result.error or "unknown error"
+                print(f"{prefix} {stage.name} — FAILED ({elapsed:.1f}s) — {err}", flush=True)
+            elif result.status == StageStatus.BLOCKED_APPROVAL:
+                print(f"{prefix} {stage.name} — blocked (awaiting approval)", flush=True)
         if result.status is not StageStatus.DONE:
             break
     return results

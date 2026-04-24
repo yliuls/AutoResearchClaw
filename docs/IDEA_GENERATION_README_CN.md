@@ -28,8 +28,11 @@ results = run_idea_generation_from_papers(
     papers="papers.json",
     topic_override="graph neural networks for molecular property prediction",
     auto_approve_gates=True,
+    verbose=True,
 )
 ```
+
+`verbose=True` 时会打印每个 stage 的开始、完成、失败状态。
 
 CLI 命令：
 
