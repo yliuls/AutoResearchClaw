@@ -17,6 +17,7 @@ from researchclaw.pipeline._helpers import (
     StageResult,
     _build_fallback_queries,
     _chat_with_prompt,
+    _emit_progress,
     _extract_topic_keywords,
     _extract_yaml_block,
     _get_evolution_overlay,
@@ -600,6 +601,10 @@ def _execute_literature_screen(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     candidates_text = _read_prior_artifact(run_dir, "candidates.jsonl") or ""
+    _emit_progress(
+        f"[Stage 05] loaded candidates.jsonl "
+        f"({len(candidates_text.splitlines())} rows, {len(candidates_text)} chars)"
+    )
 
     # --- P1-1: keyword relevance pre-filter ---
     # Before LLM screening, drop papers whose title+abstract share no keywords
@@ -638,9 +643,14 @@ def _execute_literature_screen(
         dropped_count,
         topic_keywords[:8],
     )
+    _emit_progress(
+        f"[Stage 05] keyword pre-filter complete: kept={len(filtered_rows)}, "
+        f"dropped={dropped_count}, topic_keywords={topic_keywords[:8]}"
+    )
 
     shortlist: list[dict[str, Any]] = []
     if llm is not None:
+        _emit_progress("[Stage 05] building literature_screen prompt")
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "literature_screen")
         sp = _pm.for_stage(
@@ -653,6 +663,10 @@ def _execute_literature_screen(
             quality_threshold=config.research.quality_threshold,
             candidates_text=candidates_text,
         )
+        _emit_progress(
+            f"[Stage 05] sending shortlist screening request to LLM "
+            f"(candidate_chars={len(candidates_text)})"
+        )
         resp = _chat_with_prompt(
             llm,
             sp.system,
@@ -660,12 +674,15 @@ def _execute_literature_screen(
             json_mode=sp.json_mode,
             max_tokens=sp.max_tokens,
         )
+        _emit_progress("[Stage 05] parsing LLM shortlist response")
         payload = _safe_json_loads(resp.content, {})
         if isinstance(payload, dict) and isinstance(payload.get("shortlist"), list):
             shortlist = [row for row in payload["shortlist"] if isinstance(row, dict)]
+        _emit_progress(f"[Stage 05] LLM shortlist size={len(shortlist)}")
     # T2.2: Ensure minimum shortlist size of 15 for adequate related work
     _MIN_SHORTLIST = 15
     if not shortlist:
+        _emit_progress("[Stage 05] LLM shortlist empty, using fallback shortlist builder")
         rows = (
             filtered_rows[:_MIN_SHORTLIST]
             if filtered_rows
@@ -695,8 +712,14 @@ def _execute_literature_screen(
             "Stage 5: Supplemented shortlist to %d papers (minimum: %d)",
             len(shortlist), _MIN_SHORTLIST,
         )
+        _emit_progress(
+            f"[Stage 05] supplemented shortlist to minimum size={len(shortlist)}"
+        )
     out = stage_dir / "shortlist.jsonl"
     _write_jsonl(out, shortlist)
+    _emit_progress(
+        f"[Stage 05] wrote shortlist.jsonl with {len(shortlist)} rows"
+    )
     return StageResult(
         stage=Stage.LITERATURE_SCREEN,
         status=StageStatus.DONE,
@@ -715,6 +738,10 @@ def _execute_knowledge_extract(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     shortlist = _read_prior_artifact(run_dir, "shortlist.jsonl") or ""
+    _emit_progress(
+        f"[Stage 06] loaded shortlist.jsonl "
+        f"({len(shortlist.splitlines())} rows/chunks, {len(shortlist)} chars)"
+    )
 
     # Inject web context from Stage 4 if available
     web_context = _read_prior_artifact(run_dir, "web_context.md") or ""
@@ -725,9 +752,11 @@ def _execute_knowledge_extract(
     cards_dir.mkdir(parents=True, exist_ok=True)
     cards: list[dict[str, Any]] = []
     if llm is not None:
+        _emit_progress("[Stage 06] building knowledge_extract prompt")
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "knowledge_extract")
         sp = _pm.for_stage("knowledge_extract", evolution_overlay=_overlay, shortlist=shortlist)
+        _emit_progress("[Stage 06] sending card extraction request to LLM")
         resp = _chat_with_prompt(
             llm,
             sp.system,
@@ -735,10 +764,12 @@ def _execute_knowledge_extract(
             json_mode=sp.json_mode,
             max_tokens=sp.max_tokens,
         )
+        _emit_progress("[Stage 06] parsing card extraction response")
         payload = _safe_json_loads(resp.content, {})
         if isinstance(payload, dict) and isinstance(payload.get("cards"), list):
             cards = [item for item in payload["cards"] if isinstance(item, dict)]
     if not cards:
+        _emit_progress("[Stage 06] using fallback card generation")
         rows = _parse_jsonl_rows(shortlist)
         for idx, paper in enumerate(rows[:6]):
             title = str(paper.get("title", f"Paper {idx + 1}"))
@@ -773,6 +804,7 @@ def _execute_knowledge_extract(
             parts.append(str(card.get(key, "")))
             parts.append("")
         (cards_dir / f"{card_id}.md").write_text("\n".join(parts), encoding="utf-8")
+    _emit_progress(f"[Stage 06] wrote {len(cards)} knowledge cards")
     return StageResult(
         stage=Stage.KNOWLEDGE_EXTRACT,
         status=StageStatus.DONE,

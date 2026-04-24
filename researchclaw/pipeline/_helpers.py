@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +25,21 @@ from researchclaw.pipeline.stages import (
 from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
+
+
+def _progress_enabled() -> bool:
+    return os.environ.get("RESEARCHCLAW_VERBOSE_PROGRESS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _emit_progress(message: str) -> None:
+    logger.info(message)
+    if _progress_enabled():
+        print(message, flush=True)
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -688,15 +704,43 @@ def _chat_with_prompt(
     last_exc: Exception | None = None
     for attempt in range(1 + retries):
         try:
+            _emit_progress(
+                "[LLM] starting request "
+                f"(attempt {attempt + 1}/{1 + retries}, "
+                f"json_mode={json_mode}, max_tokens={max_tokens}, "
+                f"user_chars={len(user)})"
+            )
+            t0 = time.monotonic()
             if json_mode and max_tokens is not None:
-                return llm.chat(messages, system=system, json_mode=True, max_tokens=max_tokens, strip_thinking=strip_thinking)
+                resp = llm.chat(messages, system=system, json_mode=True, max_tokens=max_tokens, strip_thinking=strip_thinking)
+                _emit_progress(
+                    f"[LLM] completed request in {time.monotonic() - t0:.1f}s "
+                    f"(response_chars={len(resp.content)})"
+                )
+                return resp
             if json_mode:
-                return llm.chat(messages, system=system, json_mode=True, strip_thinking=strip_thinking)
+                resp = llm.chat(messages, system=system, json_mode=True, strip_thinking=strip_thinking)
+                _emit_progress(
+                    f"[LLM] completed request in {time.monotonic() - t0:.1f}s "
+                    f"(response_chars={len(resp.content)})"
+                )
+                return resp
             if max_tokens is not None:
-                return llm.chat(messages, system=system, max_tokens=max_tokens, strip_thinking=strip_thinking)
-            return llm.chat(messages, system=system, strip_thinking=strip_thinking)
+                resp = llm.chat(messages, system=system, max_tokens=max_tokens, strip_thinking=strip_thinking)
+                _emit_progress(
+                    f"[LLM] completed request in {time.monotonic() - t0:.1f}s "
+                    f"(response_chars={len(resp.content)})"
+                )
+                return resp
+            resp = llm.chat(messages, system=system, strip_thinking=strip_thinking)
+            _emit_progress(
+                f"[LLM] completed request in {time.monotonic() - t0:.1f}s "
+                f"(response_chars={len(resp.content)})"
+            )
+            return resp
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            _emit_progress(f"[LLM] request failed: {exc}")
             if attempt < retries:
                 delay = 2 ** (attempt + 1)
                 logger.warning(

@@ -18,6 +18,7 @@ from researchclaw.pipeline._helpers import (
     StageResult,
     _build_context_preamble,
     _chat_with_prompt,
+    _emit_progress,
     _extract_yaml_block,
     _get_evolution_overlay,
     _load_hardware_profile,
@@ -45,6 +46,10 @@ def _execute_experiment_design(
         config, run_dir, include_goal=True, include_hypotheses=True
     )
     plan: dict[str, Any] | None = None
+    _emit_progress(
+        f"[Stage 09] loaded hypotheses/preamble "
+        f"(hypotheses_chars={len(hypotheses)}, preamble_chars={len(preamble)})"
+    )
 
     # ── Domain detection ──────────────────────────────────────────────────
     # Detect the research domain early so we can adapt experiment design
@@ -76,6 +81,7 @@ def _execute_experiment_design(
     except Exception:  # noqa: BLE001
         logger.debug("Domain detection unavailable", exc_info=True)
     if llm is not None:
+        _emit_progress("[Stage 09] building experiment_design prompt")
         _pm = prompts or PromptManager()
         # Pass dataset_guidance block for experiment design
         try:
@@ -140,6 +146,7 @@ def _execute_experiment_design(
             per_condition_budget_sec=_per_condition_sec,
             available_tier1_datasets=_tier1,
         )
+        _emit_progress("[Stage 09] sending experiment design request to LLM")
         resp = _chat_with_prompt(
             llm,
             sp.system,
@@ -147,6 +154,7 @@ def _execute_experiment_design(
             json_mode=sp.json_mode,
             max_tokens=sp.max_tokens,
         )
+        _emit_progress("[Stage 09] parsing experiment design YAML")
         raw_yaml = _extract_yaml_block(resp.content)
         try:
             parsed = yaml.safe_load(raw_yaml)
@@ -198,6 +206,7 @@ def _execute_experiment_design(
             # BUG-12: Retry with a stricter, shorter prompt
             if llm is not None:
                 logger.info("Stage 09: Retrying with strict YAML-only prompt...")
+                _emit_progress("[Stage 09] retrying with strict YAML-only prompt")
                 _retry_prompt = (
                     "Output ONLY valid YAML. No prose, no markdown fences, no explanation.\n"
                     f"Topic: {config.research.topic}\n"
@@ -216,6 +225,7 @@ def _execute_experiment_design(
                     if isinstance(_retry_parsed, dict):
                         plan = _retry_parsed
                         logger.info("Stage 09: Strict YAML retry succeeded.")
+                        _emit_progress("[Stage 09] strict YAML retry succeeded")
                 except yaml.YAMLError:
                     pass
 
@@ -252,6 +262,7 @@ def _execute_experiment_design(
                 }
 
     if plan is None:
+        _emit_progress("[Stage 09] using fallback experiment plan builder")
         # BUG-12: Use domain-aware names instead of fully generic placeholders
         _topic_prefix = config.research.topic.split()[0] if config.research.topic else "method"
         logger.warning(
@@ -436,6 +447,7 @@ def _execute_experiment_design(
         yaml.dump(plan, default_flow_style=False, allow_unicode=True),
         encoding="utf-8",
     )
+    _emit_progress("[Stage 09] wrote exp_plan.yaml")
     return StageResult(
         stage=Stage.EXPERIMENT_DESIGN,
         status=StageStatus.DONE,

@@ -13,6 +13,7 @@ from researchclaw.llm.client import LLMClient
 from researchclaw.pipeline._helpers import (
     StageResult,
     _default_hypotheses,
+    _emit_progress,
     _get_evolution_overlay,
     _multi_perspective_generate,
     _parse_jsonl_rows,
@@ -42,7 +43,11 @@ def _execute_synthesis(
         for path in sorted(Path(cards_path).glob("*.md"))[:24]:
             snippets.append(path.read_text(encoding="utf-8"))
         cards_context = "\n\n".join(snippets)
+    _emit_progress(
+        f"[Stage 07] loaded cards context ({len(cards_context)} chars)"
+    )
     if llm is not None:
+        _emit_progress("[Stage 07] building synthesis prompt")
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "synthesis")
         sp = _pm.for_stage(
@@ -51,6 +56,7 @@ def _execute_synthesis(
             topic=config.research.topic,
             cards_context=cards_context,
         )
+        _emit_progress("[Stage 07] sending synthesis request to LLM")
         resp = llm.chat(
             [{"role": "user", "content": sp.user}],
             system=sp.system,
@@ -58,6 +64,7 @@ def _execute_synthesis(
         )
         synthesis_md = resp.content
     else:
+        _emit_progress("[Stage 07] using fallback synthesis template")
         synthesis_md = f"""# Synthesis
 
 ## Cluster Overview
@@ -79,6 +86,7 @@ Under-reported failure behavior under distribution shift.
 {_utcnow_iso()}
 """
     (stage_dir / "synthesis.md").write_text(synthesis_md, encoding="utf-8")
+    _emit_progress(f"[Stage 07] wrote synthesis.md ({len(synthesis_md)} chars)")
     return StageResult(
         stage=Stage.SYNTHESIS,
         status=StageStatus.DONE,
@@ -97,7 +105,9 @@ def _execute_hypothesis_gen(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     synthesis = _read_prior_artifact(run_dir, "synthesis.md") or ""
+    _emit_progress(f"[Stage 08] loaded synthesis.md ({len(synthesis)} chars)")
     if llm is not None:
+        _emit_progress("[Stage 08] starting multi-perspective hypothesis generation")
         _pm = prompts or PromptManager()
         from researchclaw.prompts import DEBATE_ROLES_HYPOTHESIS  # noqa: PLC0415
 
@@ -111,15 +121,21 @@ def _execute_hypothesis_gen(
         # instead of sending empty context to the LLM (pure hallucination).
         if not perspectives:
             logger.warning("All debate perspectives failed; using default hypotheses")
+            _emit_progress("[Stage 08] all debate perspectives failed, using fallback hypotheses")
             hypotheses_md = _default_hypotheses(config.research.topic)
         else:
             # --- Synthesize into final hypotheses ---
+            _emit_progress(
+                f"[Stage 08] synthesizing {len(perspectives)} debate perspectives"
+            )
             hypotheses_md = _synthesize_perspectives(
                 llm, perspectives, "hypothesis_synthesize", _pm
             )
     else:
+        _emit_progress("[Stage 08] using fallback hypotheses template")
         hypotheses_md = _default_hypotheses(config.research.topic)
     (stage_dir / "hypotheses.md").write_text(hypotheses_md, encoding="utf-8")
+    _emit_progress(f"[Stage 08] wrote hypotheses.md ({len(hypotheses_md)} chars)")
 
     # --- Novelty check (non-blocking) ---
     novelty_artifacts: tuple[str, ...] = ()
